@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebHDR Demo</title>
+</head>
+<body>
+<!--
+Displays WebHDR images
+Matthew Petroff <https://mpetroff.net>, November 2015
+
+This file is released into the public domain using the CC0 1.0 Public
+Domain Dedication: https://creativecommons.org/publicdomain/zero/1.0/
+-->
+
+<canvas id="canvas"></canvas>
+
+<script id="vshader" type="x-shader/x-vertex">
+attribute vec2 a_texCoord;
+varying vec2 v_texCoord;
+
+void main() {
+    // Set position
+    gl_Position = vec4(a_texCoord, 0.0, 1.0);
+    
+    // Pass the coordinates to the fragment shader
+    v_texCoord = a_texCoord;
+}
+</script>
+
+<script id="fshader" type="x-shader/x-fragment">
+precision mediump float;
+uniform sampler2D u_imageRGB;
+uniform float u_exposure;
+uniform float u_gamma;
+varying vec2 v_texCoord;
+
+vec3 decode_webhdr(const in vec4 pixel) {
+    // Recover HDR image from tone mapped image and compression-driven map
+    float a = pixel.w * 16.0 - 8.0;
+    vec3 img = pixel.xyz / (a * (1.0 - pixel.xyz));
+    img.x = pow(10.0, img.x);
+    img.y = pow(10.0, img.y);
+    img.z = pow(10.0, img.z);
+    return img;
+}
+
+void main(void) {
+    // Decode
+    vec3 decoded = decode_webhdr(texture2D(u_imageRGB, (v_texCoord + 1.0) * 0.5));
+
+    // Apply gamma correction
+    vec3 gamma_corrected = pow(decoded * u_exposure, vec3(1.0 / u_gamma));
+
+    // Apply color
+    gl_FragColor = vec4(gamma_corrected, 1.0);
+}
+</script>
+
+<script>
+// Configuration
+var tonemap_src = 'penn-station_ld.jpg', // Tone map source image
+    cdm_src = 'penn-station_cdm.png',    // Compression-driven map source image
+    gamma = 2.2,                         // Gamma value
+    min_exposure = 0.1,                  // Minimum exposure value
+    max_exposure = 1,                    // Maximum exposure value
+    duration = 10000;                    // Duration in milliseconds
+
+// Initialize WebGL and draw image
+var gl, program;
+function initialize() {
+    'use strict';
+
+    // Initialize WebGL
+    var canvas = document.getElementById('canvas');
+    canvas.height = rgb_image.height;
+    canvas.width = rgb_image.width;
+    gl = canvas.getContext('experimental-webgl', {alpha: false, depth: false});
+    if (!gl) {
+        alert('No WebGL!');
+        return;
+    }
+
+    // Create shaders
+    var vs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs, document.getElementById('vshader').textContent);
+    gl.compileShader(vs);
+    var fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fs, document.getElementById('fshader').textContent);
+    gl.compileShader(fs);
+
+    // Link program
+    program = gl.createProgram();
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
+    gl.linkProgram(program);
+
+    // Log errors
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS))
+        console.log(gl.getShaderInfoLog(vs));
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS))
+        console.log(gl.getShaderInfoLog(fs));
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+        console.log(gl.getProgramInfoLog(program));
+
+    // Use WebGL program
+    gl.useProgram(program);
+
+    // Look up texture coordinates location
+    program.texCoordLocation = gl.getAttribLocation(program, 'a_texCoord');
+    gl.enableVertexAttribArray(program.texCoordLocation);
+
+    // Provide texture coordinates for rectangle
+    program.texCoordBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, program.texCoordBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,1,1,1,1,-1,-1,1,1,-1,-1,-1]), gl.STATIC_DRAW);
+    gl.vertexAttribPointer(program.texCoordLocation, 2, gl.FLOAT, false, 0, 0);
+
+    // Pass exposure and gamma
+    program.exposure = gl.getUniformLocation(program, 'u_exposure');
+    gl.uniform1f(program.exposure, min_exposure);
+    program.gamma = gl.getUniformLocation(program, 'u_gamma');
+    gl.uniform1f(program.gamma, gamma);
+
+    // Create textures
+    var texture = gl.createTexture();
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image_canvas);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+    // Draw using current buffer
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+// Use canvas to add exponent to alpha channel
+var image_canvas = document.createElement('canvas');
+function prepareImage() {
+    'use strict';
+    var w = rgb_image.width,
+        h = rgb_image.height,
+        e_canvas = document.createElement('canvas');
+    image_canvas.width = e_canvas.width = w;
+    image_canvas.height = e_canvas.height = h;
+    var image_context = image_canvas.getContext('2d'),
+        e_context = e_canvas.getContext('2d');
+    image_context.drawImage(rgb_image, 0, 0);
+    e_context.drawImage(e_image, 0, 0);
+    var image_data = image_context.getImageData(0, 0, w, h),
+        e_data = e_context.getImageData(0, 0, w, h);
+    for (var i = 0; i < image_data.data.length; i++)
+        image_data.data[i * 4 + 3] = e_data.data[i * 4];
+    image_context.putImageData(image_data, 0, 0);
+}
+
+// Animate exposure
+function animate() {
+    var fraction = ((performance.now() - start_time) % duration) / duration * 2;
+    if (fraction > 1)
+        fraction = 2 - fraction;
+    var exposure = min_exposure + fraction * (max_exposure - min_exposure);
+    gl.uniform1f(program.exposure, exposure);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    window.requestAnimationFrame(animate);
+}
+
+// Load images and initialize
+var loaded = 0;
+if (!(typeof performance !== 'undefined' && performance.now())) {
+    var performance = Date;
+}
+var start_time = performance.now();
+function imageLoaded() {
+    'use strict';
+    loaded += 1;
+    if (loaded > 1) {
+        prepareImage();
+        initialize();
+        animate();
+    }
+}
+var rgb_image = new Image(),
+    e_image = new Image();
+rgb_image.onload = imageLoaded;
+e_image.onload = imageLoaded;
+rgb_image.src = tonemap_src;
+e_image.src = cdm_src;
+</script>
+
+</body>
