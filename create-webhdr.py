@@ -47,7 +47,7 @@ while not done:
 # Tone map
 Ld = np.empty_like(image)
 cdm = np.empty_like(L).astype(np.uint8)
-imglog = np.log10(image)
+imglog = np.log10(image + np.finfo(float).eps)  # Add epsilon to avoid divide by zero
 for i in np.unique(Lfloor):
     lmean = np.average(Llog, weights=(Lfloor == i))
     a = np.clip(lmean / 4, -8, 8)
